@@ -1,0 +1,151 @@
+import pygame
+import random
+import sys
+
+# 1. Inicialização do Pygame
+pygame.init()
+
+# Configurações da tela
+LARGURA = 800
+ALTURA = 600
+tela = pygame.display.set_mode((LARGURA, ALTURA))
+pygame.display.set_caption("Jogo de Tiro Espacial")
+
+# Cores (RGB)
+PRETO = (0, 0, 0)
+BRANCO = (255, 255, 255)
+VERDE = (0, 255, 0)
+VERMELHO = (255, 0, 0)
+AMARELO = (255, 255, 0)
+
+# Clock para controlar o FPS
+clock = pygame.time.Clock()
+FPS = 60
+
+# 2. Classes do Jogo
+
+class Jogador(pygame.sprite.Sprite):
+    def __init__(self):
+        super().__init__()
+        # Cria o "desenho" da nave (um retângulo verde)
+        self.image = pygame.Surface((50, 40))
+        self.image.fill(VERDE)
+        self.rect = self.image.get_rect()
+        # Posição inicial (centro embaixo)
+        self.rect.centerx = LARGURA // 2
+        self.rect.bottom = ALTURA - 10
+        self.velocidade = 7
+
+    def update(self):
+        # Movimentação pelas setas do teclado
+        teclas = pygame.key.get_pressed()
+        if teclas[pygame.K_LEFT] and self.rect.left > 0:
+            self.rect.x -= self.velocidade
+        if teclas[pygame.K_RIGHT] and self.rect.right < LARGURA:
+            self.rect.x += self.velocidade
+
+    def atirar(self):
+        # Cria um tiro saindo do topo da nave
+        tiro = Tiro(self.rect.centerx, self.rect.top)
+        todos_sprites.add(tiro)
+        tiros.add(tiro)
+
+class Inimigo(pygame.sprite.Sprite):
+    def __init__(self):
+        super().__init__()
+        # Cria o inimigo (retângulo vermelho)
+        self.image = pygame.Surface((30, 30))
+        self.image.fill(VERMELHO)
+        self.rect = self.image.get_rect()
+        # Surge em um lugar aleatório no topo da tela
+        self.rect.x = random.randint(0, LARGURA - 30)
+        self.rect.y = random.randint(-100, -40)
+        self.velocidade_y = random.randint(3, 8)
+
+    def update(self):
+        self.rect.y += self.velocidade_y
+        # Se passar da tela, ressurge no topo
+        if self.rect.top > ALTURA:
+            self.rect.x = random.randint(0, LARGURA - 30)
+            self.rect.y = random.randint(-100, -40)
+            self.velocidade_y = random.randint(3, 8)
+
+class Tiro(pygame.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+        # Cria o tiro (linha amarela fina)
+        self.image = pygame.Surface((4, 10))
+        self.image.fill(AMARELO)
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.bottom = y
+        self.velocidade = -10
+
+    def update(self):
+        self.rect.y += self.velocidade
+        # Deleta o tiro se ele sumir da tela
+        if self.rect.bottom < 0:
+            self.kill()
+
+# 3. Inicialização dos Grupos de Sprites
+todos_sprites = pygame.sprite.Group()
+inimigos = pygame.sprite.Group()
+tiros = pygame.sprite.Group()
+
+# Cria o jogador
+jogador = Jogador()
+todos_sprites.add(jogador)
+
+# Cria vários inimigos
+for i in range(8):
+    inimigo = Inimigo()
+    todos_sprites.add(inimigo)
+    inimigos.add(inimigo)
+
+pontuacao = 0
+fonte = pygame.font.SysFont("arial", 30)
+
+# 4. Loop Principal do Jogo
+rodando = True
+while rodando:
+    clock.tick(FPS)
+
+    # --- Eventos (Entradas do usuário)
+    for evento in pygame.event.get():
+        if evento.type == pygame.QUIT:
+            rodando = False
+        elif evento.type == pygame.KEYDOWN:
+            if evento.key == pygame.K_SPACE:
+                jogador.atirar()
+
+    # --- Atualizações de lógica
+    todos_sprites.update()
+
+    # Verifica colisão: Tiros nos Inimigos
+    colisoes_tiros = pygame.sprite.groupcollide(inimigos, tiros, True, True)
+    for colisao in colisoes_tiros:
+        pontuacao += 10
+        # Cria um novo inimigo para substituir o que morreu
+        novo_inimigo = Inimigo()
+        todos_sprites.add(novo_inimigo)
+        inimigos.add(novo_inimigo)
+
+    # Verifica colisão: Inimigos no Jogador (Fim de jogo)
+    colisoes_jogador = pygame.sprite.spritecollide(jogador, inimigos, False)
+    if colisoes_jogador:
+        rodando = False # Game Over!
+
+    # --- Desenhar na Tela
+    tela.fill(PRETO) # Limpa a tela com fundo preto
+    todos_sprites.draw(tela) # Desenha todos os objetos
+
+    # Desenha o placar de pontuação
+    texto_pontos = fonte.render(f"Pontos: {pontuacao}", True, BRANCO)
+    tela.blit(texto_pontos, (10, 10))
+
+    # Atualiza o display do monitor
+    pygame.display.flip()
+
+# 5. Encerramento do jogo
+pygame.quit()
+sys.exit()
