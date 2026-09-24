@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tower Defense</title>
+<style>
+  :root{
+    --bg:#10141c; --panel:#1b2230; --accent:#4fd1c5; --accent2:#f6ad55;
+    --text:#e8ecf1; --path:#3a4356; --grid:#232b3a;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){--bg:#eef1f5;--panel:#ffffff;--text:#1a1f29;--grid:#dbe1ea;--path:#c7cede;}
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);}
+  #wrap{max-width:760px;margin:0 auto;padding:12px;box-sizing:border-box;}
+  h1{font-size:1.2rem;margin:4px 0 10px;text-align:center;color:var(--accent);}
+  #hud{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:8px;font-size:.9rem;}
+  #hud span{background:var(--panel);padding:6px 10px;border-radius:8px;}
+  #towerBar{display:flex;gap:8px;justify-content:center;margin-bottom:8px;flex-wrap:wrap;}
+  .towerBtn{background:var(--panel);border:2px solid transparent;color:var(--text);
+    border-radius:8px;padding:6px 10px;font-size:.8rem;cursor:pointer;text-align:center;}
+  .towerBtn.sel{border-color:var(--accent);}
+  .towerBtn small{display:block;opacity:.7;}
+  canvas{width:100%;max-width:700px;display:block;margin:0 auto;background:var(--grid);
+    border-radius:10px;touch-action:manipulation;overflow-x:auto;}
+  #msg{text-align:center;margin-top:8px;min-height:1.4em;color:var(--accent2);font-size:.9rem;}
+  #startBtn,#waveBtn{display:block;margin:10px auto;background:var(--accent);color:#0a0f14;
+    border:none;padding:8px 18px;border-radius:8px;font-weight:bold;cursor:pointer;}
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;
+    justify-content:center;flex-direction:column;color:#fff;text-align:center;padding:20px;box-sizing:border-box;}
+  #overlay.hidden{display:none;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>🏰 Tower Defense</h1>
+  <div id="hud">
+    <span>💰 <span id="gold">100</span></span>
+    <span>❤️ <span id="lives">10</span></span>
+    <span>🌊 Onda <span id="wave">0</span></span>
+  </div>
+  <div id="towerBar"></div>
+  <canvas id="game" width="640" height="480"></canvas>
+  <button id="waveBtn">Iniciar Próxima Onda</button>
+  <div id="msg">Escolha uma torre e clique no grid (fora do caminho) para construir.</div>
+</div>
+<div id="overlay" class="hidden">
+  <div>
+    <h2 id="overTitle"></h2>
+    <button id="restartBtn" style="padding:10px 20px;border-radius:8px;border:none;background:#4fd1c5;font-weight:bold;cursor:pointer;">Jogar de novo</button>
+  </div>
+</div>
+<script>
+const CELL=40, COLS=16, ROWS=12;
+const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
+
+// path in grid coords
+const pathCells=[[0,5],[1,5],[2,5],[3,5],[4,5],[4,2],[5,2],[6,2],[7,2],[7,8],[8,8],[9,8],[10,8],[10,4],[11,4],[12,4],[13,4],[14,4],[15,4],[15,6]];
+const pathSet=new Set(pathCells.map(p=>p[0]+','+p[1]));
+function centerOf(c,r){return {x:c*CELL+CELL/2,y:r*CELL+CELL/2};}
+const waypoints=pathCells.map(([c,r])=>centerOf(c,r));
+
+const towerTypes={
+  arrow:{name:'Arqueiro',cost:20,range:110,dmg:8,rate:35,color:'#4fd1c5'},
+  cannon:{name:'Canhão',cost:45,range:90,dmg:28,rate:75,color:'#f6ad55'},
+  frost:{name:'Gelo',cost:35,range:100,dmg:4,rate:45,color:'#63b3ed',slow:true}
+};
+
+let gold=100, lives=10, wave=0, selectedType='arrow', running=false, gameOver=false;
+let towers=[], enemies=[], projectiles=[], frame=0, waveActive=false, spawnQueue=[];
+
+const towerBar=document.getElementById('towerBar');
+Object.entries(towerTypes).forEach(([key,t])=>{
+  const b=document.createElement('div');
+  b.className='towerBtn'+(key==='arrow'?' sel':'');
+  b.dataset.key=key;
+  b.innerHTML=t.name+'<small>💰'+t.cost+'</small>';
+  b.onclick=()=>{selectedType=key;document.querySelectorAll('.towerBtn').forEach(x=>x.classList.remove('sel'));b.classList.add('sel');};
+  towerBar.appendChild(b);
+});
+
+function isPath(c,r){return pathSet.has(c+','+r);}
+
+canvas.addEventListener('click',e=>{
+  if(gameOver) return;
+  const rect=canvas.getBoundingClientRect();
+  const scaleX=canvas.width/rect.width, scaleY=canvas.height/rect.height;
+  const x=(e.clientX-rect.left)*scaleX, y=(e.clientY-rect.top)*scaleY;
+  const c=Math.floor(x/CELL), r=Math.floor(y/CELL);
+  if(c<0||c>=COLS||r<0||r>=ROWS) return;
+  if(isPath(c,r)){setMsg('Não pode construir no caminho!');return;}
+  if(towers.some(t=>t.c===c&&t.r===r)){setMsg('Já tem uma torre aqui!');return;}
+  const type=towerTypes[selectedType];
+  if(gold<type.cost){setMsg('Ouro insuficiente!');return;}
+  gold-=type.cost;
+  const pos=centerOf(c,r);
+  towers.push({c,r,x:pos.x,y:pos.y,...type,cooldown:0});
+  updateHud();
+  setMsg('Torre construída!');
+});
+
+function setMsg(m){document.getElementById('msg').textContent=m;}
+function updateHud(){
+  document.getElementById('gold').textContent=gold;
+  document.getElementById('lives').textContent=lives;
+  document.getElementById('wave').textContent=wave;
+}
+
+function startWave(){
+  if(waveActive||gameOver) return;
+  wave++;
+  const count=5+wave*2;
+  spawnQueue=[];
+  for(let i=0;i<count;i++){
+    spawnQueue.push({hp:30+wave*12,maxHp:30+wave*12,speed:1+wave*0.05,delay:i*30});
+  }
+  waveActive=true;
+  updateHud();
+}
+document.getElementById('waveBtn').onclick=startWave;
+
+function spawnEnemy(base){
+  enemies.push({x:waypoints[0].x,y:waypoints[0].y,wp:1,hp:base.hp,maxHp:base.maxHp,speed:base.speed,slowT:0});
+}
+
+function update(){
+  frame++;
+  if(waveActive && spawnQueue.length){
+    if(spawnQueue[0].delay<=0){spawnEnemy(spawnQueue.shift());}
+    else spawnQueue.forEach(s=>s.delay--);
+  }
+  // enemies move
+  for(let i=enemies.length-1;i>=0;i--){
+    const en=enemies[i];
+    let spd=en.speed*(en.slowT>0?0.5:1);
+    if(en.slowT>0) en.slowT--;
+    const target=waypoints[en.wp];
+    if(!target){ // reached end
+      lives--; enemies.splice(i,1); updateHud();
+      if(lives<=0) endGame(false);
+      continue;
+    }
+    const dx=target.x-en.x, dy=target.y-en.y, dist=Math.hypot(dx,dy);
+    if(dist<spd){en.wp++;}
+    else{en.x+=dx/dist*spd; en.y+=dy/dist*spd;}
+    if(en.hp<=0){
+      gold+=5+wave; enemies.splice(i,1); updateHud();
+    }
+  }
+  // towers
+  towers.forEach(t=>{
+    if(t.cooldown>0){t.cooldown--;return;}
+    let target=null,best=Infinity;
+    enemies.forEach(en=>{
+      const d=Math.hypot(en.x-t.x,en.y-t.y);
+      if(d<=t.range && d<best){best=d;target=en;}
+    });
+    if(target){
+      projectiles.push({x:t.x,y:t.y,target,dmg:t.dmg,color:t.color,slow:t.slow});
+      t.cooldown=t.rate;
+    }
+  });
+  // projectiles
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p=projectiles[i];
+    if(!enemies.includes(p.target)){projectiles.splice(i,1);continue;}
+    const dx=p.target.x-p.x, dy=p.target.y-p.y, dist=Math.hypot(dx,dy);
+    if(dist<8){
+      p.target.hp-=p.dmg;
+      if(p.slow) p.target.slowT=60;
+      projectiles.splice(i,1);
+    }else{
+      p.x+=dx/dist*6; p.y+=dy/dist*6;
+    }
+  }
+  if(waveActive && !spawnQueue.length && !enemies.length){
+    waveActive=false; gold+=20; updateHud();
+    setMsg('Onda '+wave+' concluída! +20 ouro bônus.');
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // grid
+  for(let c=0;c<COLS;c++)for(let r=0;r<ROWS;r++){
+    ctx.fillStyle=isPath(c,r)?getCss('--path'):getCss('--grid');
+    ctx.fillRect(c*CELL,r*CELL,CELL-1,CELL-1);
+  }
+  // towers (wizards)
+  towers.forEach(t=>drawWizard(t));
+  // enemies
+  enemies.forEach(en=>{
+    ctx.beginPath();ctx.arc(en.x,en.y,10,0,7);
+    ctx.fillStyle=en.slowT>0?'#90cdf4':'#e53e3e';ctx.fill();
+    ctx.fillStyle='#000';ctx.fillRect(en.x-12,en.y-18,24,4);
+    ctx.fillStyle='#48bb78';ctx.fillRect(en.x-12,en.y-18,24*Math.max(en.hp,0)/en.maxHp,4);
+  });
+  // projectiles
+  projectiles.forEach(p=>{
+    ctx.beginPath();ctx.arc(p.x,p.y,4,0,7);ctx.fillStyle=p.color;ctx.fill();
+  });
+}
+function getCss(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+
+function drawWizard(t){
+  const bob=Math.sin((frame+t.c*10+t.r*7)/12)*1.5;
+  const x=t.x, y=t.y+bob;
+  const skin='#e8b98a';
+  ctx.save();
+  ctx.translate(x,y);
+  // range ring (subtle, only if recently built/attacking)
+  if(t.cooldown>t.rate-6){
+    ctx.beginPath();ctx.arc(0,0,t.range,0,7);
+    ctx.strokeStyle=t.color+'33';ctx.lineWidth=1.5;ctx.stroke();
+  }
+  // shadow
+  ctx.beginPath();ctx.ellipse(0,16,12,4,0,0,7);
+  ctx.fillStyle='rgba(0,0,0,.25)';ctx.fill();
+  // robe (triangle body)
+  ctx.beginPath();
+  ctx.moveTo(0,-6);
+  ctx.lineTo(-11,16);
+  ctx.lineTo(11,16);
+  ctx.closePath();
+  ctx.fillStyle=t.color;ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.25)';ctx.lineWidth=1;ctx.stroke();
+  // robe trim
+  ctx.beginPath();ctx.moveTo(-8,10);ctx.lineTo(8,10);
+  ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=1.5;ctx.stroke();
+  // head
+  ctx.beginPath();ctx.arc(0,-9,6,0,7);
+  ctx.fillStyle=skin;ctx.fill();
+  // hat (cone + brim)
+  ctx.beginPath();
+  ctx.moveTo(-8,-13);ctx.lineTo(8,-13);ctx.lineTo(0,-30);
+  ctx.closePath();ctx.fillStyle=t.color;ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.25)';ctx.stroke();
+  ctx.beginPath();ctx.ellipse(0,-13,9,2.5,0,0,7);
+  ctx.fillStyle=t.color;ctx.fill();
+  // staff
+  ctx.beginPath();ctx.moveTo(12,14);ctx.lineTo(15,-14);
+  ctx.strokeStyle='#8b5e34';ctx.lineWidth=2.5;ctx.lineCap='round';ctx.stroke();
+  // glowing orb (pulses when ready/firing)
+  const ready=t.cooldown<=0;
+  const pulse=3+Math.sin(frame/8)*1;
+  ctx.beginPath();ctx.arc(15,-16,ready?pulse+2:3,0,7);
+  ctx.fillStyle=t.color;
+  ctx.shadowColor=t.color;ctx.shadowBlur=ready?12:4;
+  ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+function endGame(won){
+  gameOver=true; running=false;
+  document.getElementById('overTitle').textContent=won?'🎉 Você venceu!':'💀 Fim de jogo';
+  document.getElementById('overlay').classList.remove('hidden');
+}
+document.getElementById('restartBtn').onclick=()=>location.reload();
+
+function loop(){
+  if(!gameOver){update();draw();}
+  requestAnimationFrame(loop);
+}
+draw();
+loop();
+</script>
+</body>
+</html>
